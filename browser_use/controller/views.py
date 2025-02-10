@@ -8,6 +8,9 @@ class SearchGoogleAction(BaseModel):
 	query: str
 
 
+class HoverElementAction(BaseModel):
+	index: int
+
 class GoToUrlAction(BaseModel):
 	url: str
 

@@ -14,6 +14,7 @@ from browser_use.controller.views import (
 	ClickElementAction,
 	DoneAction,
 	GoToUrlAction,
+	HoverElementAction,
 	InputTextAction,
 	NoParamsAction,
 	OpenTabAction,
@@ -432,6 +433,81 @@ class Controller:
 				msg = f'Selection failed: {str(e)}'
 				logger.error(msg)
 				return ActionResult(error=msg, include_in_memory=True)
+
+		@self.registry.action("Hover over element", param_model=HoverElementAction)
+		async def hover_element(params: HoverElementAction, browser: BrowserContext):
+			session = await browser.get_session()
+			page = await browser.get_current_page()
+			state = session.cached_state
+			
+			if params.index not in state.selector_map:
+				raise Exception(f'Element with index {params.index} does not exist')
+				
+			element_node = state.selector_map[params.index]
+			
+			if not element_node.page_coordinates:
+				msg = f"No page coordinates found for element with index {params.index}"
+				return ActionResult(extracted_content=msg, include_in_memory=True)
+			
+			try:
+				# Try XPath first
+				if hasattr(element_node, 'xpath') and element_node.xpath:
+					locator = page.locator(f"xpath={element_node.xpath}")
+					if await locator.count() == 1:
+						await locator.hover(force=True)
+						msg = f"Cursor moved to element using XPath for index {params.index}"
+						return ActionResult(extracted_content=msg, include_in_memory=True)
+				
+				# Try text content
+				text_content = None
+				if hasattr(element_node, 'children'):
+					for child in element_node.children:
+						if hasattr(child, 'type') and child.__getattribute__('type') == 'TEXT_NODE':
+							text_content = child.__getattribute__('text').strip()
+							break
+				
+				if text_content:
+					locator = page.get_by_text(text_content, exact=True)
+					if await locator.count() == 1:
+						await locator.hover(force=True)
+						msg = f"Cursor moved to element using text content for index {params.index}"
+						return ActionResult(extracted_content=msg, include_in_memory=True)
+				
+				# Fallback to coordinates with persistent hover
+				try:
+					await page.evaluate(f"""
+						const element = document.elementFromPoint({element_node.page_coordinates.center.x}, 
+																{element_node.page_coordinates.center.y});
+						if (element) {{
+							const event = new MouseEvent('mouseover', {{
+								'view': window,
+								'bubbles': true,
+								'cancelable': true,
+								'clientX': {element_node.page_coordinates.center.x},
+								'clientY': {element_node.page_coordinates.center.y}
+							}});
+							element.dispatchEvent(event);
+						}}
+					""")
+					msg = f"Hover state set on element for index {params.index} (fallback method)"
+				except Exception as e:
+					# Final fallback to basic mouse.move if everything else fails
+					await page.mouse.move(
+						element_node.page_coordinates.center.x,
+						element_node.page_coordinates.center.y
+					)
+					msg = f"Cursor moved to element coordinates for index {params.index} (final fallback)"
+				
+			except Exception as e:
+				# Final fallback to basic mouse.move in case of any errors
+				await page.mouse.move(
+					element_node.page_coordinates.center.x,
+					element_node.page_coordinates.center.y
+				)
+				msg = f"Cursor moved to element coordinates for index {params.index} (error fallback)"
+			
+			return ActionResult(extracted_content=msg, include_in_memory=True)
+
 
 	def action(self, description: str, **kwargs):
 		"""Decorator for registering custom actions
